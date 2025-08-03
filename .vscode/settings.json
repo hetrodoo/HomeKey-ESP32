@@ -1,18 +1,26 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPathWin": "c:\\Espressif\\frameworks\\esp-idf-v5.3",
+  "idf.pythonInstallPath": "c:\\Espressif\\tools\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.openOcdConfigs": [
+    "board/esp32-wrover-kit-3.3v.cfg"
+  ],
+  "idf.portWin": "COM8",
+  "idf.toolsPathWin": "c:\\Espressif\\tools",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32"
+  },
+  "clangd.path": "c:\\Espressif\\tools\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=c:\\Espressif\\tools\\tools\\xtensa-esp-elf\\esp-14.2.0_20241119\\xtensa-esp-elf\\bin\\xtensa-esp32-elf-gcc.exe",
+    "--compile-commands-dir=${workspaceFolder}\\build"
+  ],
   "files.associations": {
-    "*.js": "javascript",
-    "array": "cpp",
-    "tuple": "cpp",
-    "variant": "cpp",
-    "deque": "cpp",
-    "string": "cpp",
-    "vector": "cpp",
-    "cstdint": "cpp",
     "any": "cpp",
+    "array": "cpp",
     "atomic": "cpp",
     "bit": "cpp",
-    "*.tcc": "cpp",
     "bitset": "cpp",
     "cctype": "cpp",
     "charconv": "cpp",
@@ -26,18 +34,22 @@
     "condition_variable": "cpp",
     "cstdarg": "cpp",
     "cstddef": "cpp",
+    "cstdint": "cpp",
     "cstdio": "cpp",
     "cstdlib": "cpp",
     "cstring": "cpp",
     "ctime": "cpp",
     "cwchar": "cpp",
     "cwctype": "cpp",
+    "deque": "cpp",
     "forward_list": "cpp",
     "list": "cpp",
     "map": "cpp",
     "set": "cpp",
+    "string": "cpp",
     "unordered_map": "cpp",
     "unordered_set": "cpp",
+    "vector": "cpp",
     "exception": "cpp",
     "algorithm": "cpp",
     "functional": "cpp",
@@ -52,6 +64,7 @@
     "regex": "cpp",
     "string_view": "cpp",
     "system_error": "cpp",
+    "tuple": "cpp",
     "type_traits": "cpp",
     "utility": "cpp",
     "format": "cpp",
@@ -75,21 +88,15 @@
     "stdexcept": "cpp",
     "stop_token": "cpp",
     "streambuf": "cpp",
+    "text_encoding": "cpp",
     "thread": "cpp",
     "cinttypes": "cpp",
     "typeinfo": "cpp",
-    "valarray": "cpp"
-  },
-  "idf.flashType": "UART",
-  "idf.port": "/dev/ttyACM0",
-  "idf.openOcdConfigs": [
-    "board/esp32s3-builtin.cfg"
-  ],
-  "clangd.path": "${userHome}/esp-clang/bin/clangd",
-  "clangd.arguments": [
-    "--query-driver=${userHome}/.espressif/tools/xtensa-esp-elf/**/xtensa-esp-elf/bin/xtensa-*-elf-*,${userHome}/tools/riscv32-esp-elf/**/riscv32-esp-elf/bin/riscv32-esp-elf-*",
-    "--background-index",
-    "--import-insertions",
-    "--all-scopes-completion"
-  ]
+    "valarray": "cpp",
+    "variant": "cpp",
+    "xstring": "cpp",
+    "xutility": "cpp",
+    "filesystem": "cpp",
+    "xiosbase": "cpp"
+  }
 }
