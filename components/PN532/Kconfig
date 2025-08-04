@@ -1,0 +1,31 @@
+menu "PN532 Configuration"
+
+config PN532_SCK
+    int "PN532 SCK GPIO"
+	range 0 34
+	default 18
+	help
+		GPIO number (IOxx) for SPI.
+
+config PN532_SS
+    int "PN532 SS GPIO"
+	range 0 34
+	default 5
+	help
+		GPIO number (IOxx) for SPI.
+
+config PN532_MISO
+    int "PN532 MISO GPIO"
+	range 0 34
+	default 19
+	help
+		GPIO number (IOxx) for SPI.
+
+config PN532_MOSI
+    int "PN532 MOSI GPIO"
+	range 0 34
+	default 23
+	help
+		GPIO number (IOxx) for SPI.		
+
+endmenu
