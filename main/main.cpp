@@ -22,6 +22,7 @@
 
 auto TAG = "MAIN";
 
+nlohmann::json acl;
 PN532_SPI *pn532spi;
 PN532 *nfc;
 TaskHandle_t nfc_reconnect_task = nullptr;
@@ -32,12 +33,6 @@ readerData_t readerData;
 KeyFlow hkFlow = kFlowFAST;
 uint8_t ecpData[18] = {0x6A, 0x2, 0xCB, 0x2, 0x6, 0x2, 0x11, 0x0};
 const std::array<std::array<uint8_t, 6>, 4> hk_color_vals = {{{0x01, 0x04, 0xce, 0xd5, 0xda, 0x00}, {0x01, 0x04, 0xaa, 0xd6, 0xec, 0x00}, {0x01, 0x04, 0xe3, 0xe3, 0xe3, 0x00}, {0x01, 0x04, 0x00, 0x00, 0x00, 0x00}}};
-
-void gnd_pulse_pin(const uint8_t pin, const TickType_t period = 150) {
-  digitalWrite(pin, LOW);
-  vTaskDelay(period / portTICK_PERIOD_MS);
-  digitalWrite(pin, HIGH);
-}
 
 std::string hex_representation(const std::vector<uint8_t> &v)
 {
@@ -51,6 +46,36 @@ std::string hex_representation(const std::vector<uint8_t> &v)
   return hex_tmp;
 }
 
+void gnd_pulse_pin(const uint8_t pin, const TickType_t period = 250, const uint8_t times = 3) {
+  for (uint8_t i = 0; i < times; i++) {
+    digitalWrite(pin, LOW);
+    vTaskDelay(period / portTICK_PERIOD_MS);
+    digitalWrite(pin, HIGH);
+    vTaskDelay(period / portTICK_PERIOD_MS);
+  }
+}
+
+void try_unlock() {
+  const auto TAG = "try_unlock";
+
+  LOG(I, "Trying...");
+  gnd_pulse_pin(GPIO_NUM_21, 500, 2);
+  gnd_pulse_pin(GPIO_NUM_20, 2500, 1);
+}
+
+bool auth_raw_uid(const std::string &uid) {
+  if (!acl.is_array()) {
+    return false;
+  }
+
+  for (const auto& entry : acl) {
+    if (entry.is_string() && entry.get<std::string>() == uid) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 void setup_spiffs() {
   const auto TAG = "setup_spiffs";
@@ -72,10 +97,10 @@ void setup_spiffs() {
   LOG(I, "Total: %d, Used: %d", total, used);
 }
 
-nlohmann::json read_json_key() {
-  const auto TAG = "read_json_key";
+nlohmann::json read_json_file(const char *path) {
+  const auto TAG = "read_json_file";
 
-  if (FILE* f = fopen("/spiffs/key.json", "r"); f != nullptr) {
+  if (FILE* f = fopen(path, "r"); f != nullptr) {
     fseek(f, 0, SEEK_END);
     const long size = ftell(f);
     rewind(f);
@@ -249,9 +274,7 @@ void nfc_retry(void *arg)
           std::string payloadStr = payload.dump();
 
           LOG(I, "Apple HomeKey success!, payload: %s", payloadStr.c_str());
-
-          gnd_pulse_pin(GPIO_NUM_21);
-          gnd_pulse_pin(GPIO_NUM_20, 2500);
+          try_unlock();
 
           auto stopTime = std::chrono::high_resolution_clock::now();
           LOG(I, "Total Time (detection->auth->gpio->mqtt): %lli ms", std::chrono::duration_cast<std::chrono::milliseconds>(stopTime - startTime).count());
@@ -259,19 +282,22 @@ void nfc_retry(void *arg)
 
         nfc->setRFField(0x02, 0x01);
       }
-      else
-      {
-        LOG(W, "Invalid Response, probably not HomeKey, publishing target's UID");
+      else {
+        LOG(W, "Invalid Response, probably not Apple HomeKey.");
 
         nlohmann::json payload;
         payload["atqa"] = hex_representation(std::vector<uint8_t>(atqa, atqa + 2));
         payload["sak"] = hex_representation(std::vector<uint8_t>(sak, sak + 1));
         payload["uid"] = hex_representation(std::vector<uint8_t>(uid, uid + uidLen));
         payload["home_key"] = false;
-        std::string payload_dump = payload.dump();
+        LOG(I, "Tag payload %s.", payload.dump().c_str());
 
-        LOG(I, "NON Apple HomeKey TAG SCANNED, payload: %s", payload_dump.c_str());
-        // TODO: handle non-home_key tag
+        if (auth_raw_uid(payload["uid"])) {
+          LOG(I, "Raw tag uid found in acl.");
+          try_unlock();
+        } else {
+          LOG(E, "UID was not on acl. ignoring...");
+        }
       }
       vTaskDelay(50 / portTICK_PERIOD_MS);
       nfc->inRelease();
@@ -313,7 +339,8 @@ void nfc_retry(void *arg)
 
       if (input == "read")
       {
-        LOG(I, "%s", read_json_key().dump().c_str());
+        LOG(I, "Keys: %s", read_json_file("/spiffs/key.json").dump().c_str());
+        LOG(I, "ACL: %s", read_json_file("/spiffs/acl.json").dump().c_str());
       }
     }
 
@@ -337,7 +364,8 @@ void setup()
 
   setup_spiffs();
 
-  read_json_key().get_to<readerData_t>(readerData);
+  acl = read_json_file("/spiffs/acl.json");
+  read_json_file("/spiffs/key.json").get_to<readerData_t>(readerData);
   LOG(I, "Reader Data loaded from spiffs.");
 
   pn532spi = new PN532_SPI(GPIO_NUM_7, GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6);
