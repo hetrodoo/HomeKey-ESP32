@@ -9,7 +9,7 @@ class HKAuthenticationContext
 private:
   const char *TAG = "HKAuthCtx";
   readerData_t &readerData;
-  void (*update_reader_data)();
+  bool (*update_reader_data)();
   std::vector<uint8_t> readerEphX;
   std::vector<uint8_t> readerEphPrivKey;
   std::vector<uint8_t> readerEphPubKey;
@@ -21,6 +21,6 @@ private:
   std::vector<uint8_t> getHashIdentifier(const std::vector<uint8_t>& key);
   std::vector<uint8_t> commandFlow(CommandFlowStatus status);
 public:
-  HKAuthenticationContext(const std::function<bool(std::vector<uint8_t>&, std::vector<uint8_t>&, bool)> &nfc, readerData_t &readerData, void (*update_reader_data)());
+  HKAuthenticationContext(const std::function<bool(std::vector<uint8_t>&, std::vector<uint8_t>&, bool)> &nfc, readerData_t &readerData, bool (*update_reader_data)());
   std::tuple<std::vector<uint8_t>, std::vector<uint8_t>, KeyFlow> authenticate(KeyFlow);
 };

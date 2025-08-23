@@ -20,7 +20,7 @@
  * @param readerData The `readerData` parameter is a reference to an object of type
  * `readerData_t`.
  */
-HKAuthenticationContext::HKAuthenticationContext(const std::function<bool(std::vector<uint8_t>&, std::vector<uint8_t>&, bool)> &nfc, readerData_t &readerData, void (*update_reader_data_func)()) : readerData(readerData), nfc(nfc), transactionIdentifier(16)
+HKAuthenticationContext::HKAuthenticationContext(const std::function<bool(std::vector<uint8_t>&, std::vector<uint8_t>&, bool)> &nfc, readerData_t &readerData, bool (*update_reader_data_func)()) : readerData(readerData), nfc(nfc), transactionIdentifier(16)
 {
   update_reader_data = update_reader_data_func;
   // esp_log_level_set(TAG, ESP_LOG_VERBOSE);

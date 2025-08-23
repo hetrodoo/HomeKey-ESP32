@@ -7,6 +7,7 @@
 #include "hkAuthContext.h"
 #include "HomeKey.h"
 #include "array"
+#include "HomeSpan.h"
 #include "logging.h"
 #include "PN532_SPI.h"
 #include "PN532.h"
@@ -22,6 +23,8 @@
 
 auto TAG = "MAIN";
 
+bool write_json_key();
+
 nlohmann::json acl;
 PN532_SPI *pn532spi;
 PN532 *nfc;
@@ -31,8 +34,133 @@ TaskHandle_t serial_poll_task = nullptr;
 
 readerData_t readerData;
 KeyFlow hkFlow = kFlowFAST;
+SpanCharacteristic *lockCurrentState;
+SpanCharacteristic *lockTargetState;
 uint8_t ecpData[18] = {0x6A, 0x2, 0xCB, 0x2, 0x6, 0x2, 0x11, 0x0};
 const std::array<std::array<uint8_t, 6>, 4> hk_color_vals = {{{0x01, 0x04, 0xce, 0xd5, 0xda, 0x00}, {0x01, 0x04, 0xaa, 0xd6, 0xec, 0x00}, {0x01, 0x04, 0xe3, 0xe3, 0xe3, 0x00}, {0x01, 0x04, 0x00, 0x00, 0x00, 0x00}}};
+
+struct LockManagement final : Service::LockManagement
+{
+  SpanCharacteristic *lockControlPoint;
+  SpanCharacteristic *version;
+  const char *TAG = "LockManagement";
+
+  LockManagement() : Service::LockManagement()
+  {
+    LOG(I, "Configuring LockManagement");
+
+    lockControlPoint = new Characteristic::LockControlPoint();
+    version = new Characteristic::Version();
+
+  }
+
+};
+
+struct NFCAccessoryInformation final : Service::AccessoryInformation
+{
+  const char *TAG = "NFCAccessoryInformation";
+
+  NFCAccessoryInformation() : Service::AccessoryInformation()
+  {
+
+    LOG(I, "Configuring NFCAccessoryInformation"); // initialization message
+
+    opt.push_back(&_CUSTOM_HardwareFinish);
+    new Characteristic::Identify();
+    new Characteristic::Manufacturer("rednblkx");
+    new Characteristic::Model("HomeKey-ESP32");
+    new Characteristic::Name(DEVICE_NAME);
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    std::string app_version = app_desc->version;
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BT);
+    char macStr[9] = {0};
+    sprintf(macStr, "%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3]);
+    std::string serialNumber = "HK-";
+    serialNumber.append(macStr);
+    new Characteristic::SerialNumber(serialNumber.c_str());
+    new Characteristic::FirmwareRevision(app_version.c_str());
+    std::array<uint8_t, 6> decB64 = hk_color_vals[HK_COLOR::SILVER];
+    TLV8 hwfinish(NULL, 0);
+    hwfinish.unpack(decB64.data(), decB64.size());
+    new Characteristic::HardwareFinish(hwfinish);
+
+  } // end constructor
+};
+
+struct LockMechanism final : Service::LockMechanism
+{
+  const char *TAG = "LockMechanism";
+
+  LockMechanism() : Service::LockMechanism()
+  {
+    LOG(I, "Configuring LockMechanism");
+    lockCurrentState = new Characteristic::LockCurrentState(1, true);
+    lockTargetState = new Characteristic::LockTargetState(1, true);
+    memcpy(ecpData + 8, readerData.reader_gid.data(), readerData.reader_gid.size());
+    with_crc16(ecpData, 16, ecpData + 16);
+
+    // int currentState = lockCurrentState->getNewVal();
+    // Forward current state
+  }
+
+  boolean update()
+  {
+    int targetState = lockTargetState->getNewVal();
+    LOG(I, "New LockState=%d, Current LockState=%d", targetState, lockCurrentState->getVal());
+
+    // int currentState = lockCurrentState->getNewVal();
+    // TODO: Handle the case where the current state is not LOCKED or UNLOCKED
+
+    return (true);
+  }
+};
+
+struct NFCAccess final : Service::NFCAccess
+{
+  SpanCharacteristic *configurationState;
+  SpanCharacteristic *nfcControlPoint;
+  SpanCharacteristic *nfcSupportedConfiguration;
+  const char *TAG = "NFCAccess";
+
+  NFCAccess() : Service::NFCAccess()
+  {
+    LOG(I, "Configuring NFCAccess");
+    configurationState = new Characteristic::ConfigurationState();
+    nfcControlPoint = new Characteristic::NFCAccessControlPoint();
+    TLV8 conf(NULL, 0);
+    conf.add(0x01, 0x10);
+    conf.add(0x02, 0x10);
+    nfcSupportedConfiguration = new Characteristic::NFCAccessSupportedConfiguration(conf);
+  }
+
+  boolean update()
+  {
+    LOG(D, "PROVISIONED READER KEY: %s", red_log::bufToHexString(readerData.reader_pk.data(), readerData.reader_pk.size()).c_str());
+    LOG(D, "READER GROUP IDENTIFIER: %s", red_log::bufToHexString(readerData.reader_gid.data(), readerData.reader_gid.size()).c_str());
+    LOG(D, "READER UNIQUE IDENTIFIER: %s", red_log::bufToHexString(readerData.reader_id.data(), readerData.reader_id.size()).c_str());
+
+    TLV8 ctrlData(nullptr, 0);
+    nfcControlPoint->getNewTLV(ctrlData);
+    std::vector<uint8_t> tlvData(ctrlData.pack_size());
+    ctrlData.pack(tlvData.data());
+    if (tlvData.size() == 0)
+      return false;
+    LOG(D, "Decoded data: %s", red_log::bufToHexString(tlvData.data(), tlvData.size()).c_str());
+    LOG(D, "Decoded data length: %d", tlvData.size());
+    HK_HomeKit hkCtx(readerData, write_json_key, tlvData);
+    std::vector<uint8_t> result = hkCtx.processResult();
+    if (readerData.reader_gid.size() > 0)
+    {
+      memcpy(ecpData + 8, readerData.reader_gid.data(), readerData.reader_gid.size());
+      with_crc16(ecpData, 16, ecpData + 16);
+    }
+    TLV8 res(nullptr, 0);
+    res.unpack(result.data(), result.size());
+    nfcControlPoint->setTLV(res, false);
+    return true;
+  }
+};
 
 std::string hex_representation(const std::vector<uint8_t> &v)
 {
@@ -110,7 +238,7 @@ nlohmann::json read_json_file(const char *path) {
     if (buffer == nullptr) {
       LOG(E, "Failed to allocate buffer");
       fclose(f);
-      abort();
+      return nullptr;
     }
 
     fread(buffer, 1, size, f);
@@ -124,17 +252,17 @@ nlohmann::json read_json_file(const char *path) {
     if (keys.is_discarded())
     {
       LOG(E, "Read invalid json content, aborting!");
-      abort();
+      return nullptr;
     }
 
     return keys;
   }
 
   LOG(E, "Failed to open file for reading.");
-  abort();
+  return nullptr;
 }
 
-void write_json_key() {
+bool write_json_key() {
   const auto TAG = "write_json_key";
 
   if (FILE* f = fopen("/spiffs/key.json", "w"); f != nullptr) {
@@ -145,11 +273,27 @@ void write_json_key() {
     fclose(f);
 
     LOG(I, "Successfully written to file.");
-    return;
+    return true;
   }
 
   LOG(E, "Failed to open file for writing.");
-  abort();
+  return false;
+}
+
+void delete_json_key()
+{
+  if (const int ret = unlink("/spiffs/key.json"); ret == 0) {
+    printf("Deleted key successfully.\n");
+  } else {
+    printf("Failed to delete key file. Error: %d\n", ret);
+  }
+
+  readerData.issuers.clear();
+  readerData.reader_gid.clear();
+  readerData.reader_id.clear();
+  readerData.reader_pk.clear();
+  readerData.reader_pk_x.clear();
+  readerData.reader_sk.clear();
 }
 
 void nfc_retry(void *arg)
@@ -339,8 +483,17 @@ void nfc_retry(void *arg)
 
       if (input == "read")
       {
-        LOG(I, "Keys: %s", read_json_file("/spiffs/key.json").dump().c_str());
-        LOG(I, "ACL: %s", read_json_file("/spiffs/acl.json").dump().c_str());
+        nlohmann::json keys = read_json_file("/spiffs/key.json");
+
+        if (keys != nullptr) {
+          LOG(I, "Keys: %s", keys.dump().c_str());
+        }
+
+        nlohmann::json acl = read_json_file("/spiffs/acl.json");
+
+        if (keys != nullptr) {
+          LOG(I, "ACL: %s", acl.dump().c_str());
+        }
       }
     }
 
@@ -348,15 +501,67 @@ void nfc_retry(void *arg)
   }
 }
 
+std::vector<uint8_t> getHashIdentifier(const uint8_t *key, size_t len)
+{
+  auto TAG = "getHashIdentifier";
+  LOG(V, "Key: %s, Length: %d", red_log::bufToHexString(key, len).c_str(), len);
+  std::vector<unsigned char> hashable;
+  std::string string = "key-identifier";
+  hashable.insert(hashable.begin(), string.begin(), string.end());
+  hashable.insert(hashable.end(), key, key + len);
+  LOG(V, "Hashable: %s", red_log::bufToHexString(&hashable.front(), hashable.size()).c_str());
+  uint8_t hash[32];
+  mbedtls_sha256(&hashable.front(), hashable.size(), hash, 0);
+  LOG(V, "HashIdentifier: %s", red_log::bufToHexString(hash, 8).c_str());
+  return std::vector<uint8_t>{hash, hash + 8};
+}
+
+void pairCallback()
+{
+  if (HAPClient::nAdminControllers() == 0)
+  {
+    delete_json_key();
+    return;
+  }
+
+  for (auto it = homeSpan.controllerListBegin(); it != homeSpan.controllerListEnd(); ++it)
+  {
+    std::vector<uint8_t> id = getHashIdentifier(it->getLTPK(), 32);
+    LOG(D, "Found allocated controller - Hash: %s", red_log::bufToHexString(id.data(), 8).c_str());
+    const hkIssuer_t *foundIssuer = nullptr;
+
+    for (auto &&issuer : readerData.issuers)
+    {
+      if (std::equal(issuer.issuer_id.begin(), issuer.issuer_id.end(), id.begin()))
+      {
+        LOG(D, "Issuer %s already added, skipping", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str());
+        foundIssuer = &issuer;
+        break;
+      }
+    }
+
+    if (foundIssuer == nullptr)
+    {
+      LOG(D, "Adding new issuer - ID: %s", red_log::bufToHexString(id.data(), 8).c_str());
+      hkIssuer_t newIssuer;
+      newIssuer.issuer_id = std::vector<uint8_t>{id.begin(), id.begin() + 8};
+      newIssuer.issuer_pk.insert(newIssuer.issuer_pk.begin(), it->getLTPK(), it->getLTPK() + 32);
+      readerData.issuers.emplace_back(newIssuer);
+    }
+  }
+
+  write_json_key();
+}
+
 void setup()
 {
   const auto TAG = "SETUP";
 
-  pinMode(GPIO_NUM_20, OUTPUT);
-  digitalWrite(GPIO_NUM_20, HIGH);
-
-  pinMode(GPIO_NUM_21, OUTPUT);
-  digitalWrite(GPIO_NUM_21, HIGH);
+  // pinMode(GPIO_NUM_20, OUTPUT);
+  // digitalWrite(GPIO_NUM_20, HIGH);
+  //
+  // pinMode(GPIO_NUM_21, OUTPUT);
+  // digitalWrite(GPIO_NUM_21, HIGH);
 
   Serial.begin(115200);
   //while (!Serial) {}
@@ -365,28 +570,63 @@ void setup()
   setup_spiffs();
 
   acl = read_json_file("/spiffs/acl.json");
-  read_json_file("/spiffs/key.json").get_to<readerData_t>(readerData);
-  LOG(I, "Reader Data loaded from spiffs.");
+  nlohmann::json keys = read_json_file("/spiffs/key.json");
 
-  pn532spi = new PN532_SPI(SS, SCK, MISO, MOSI);
-  nfc = new PN532(*pn532spi);
-  nfc->begin();
+  if (keys != nullptr) {
+    keys.get_to<readerData_t>(readerData);
+    LOG(I, "Reader Data loaded from spiffs.");
 
-  LOG(I, "READER GROUP ID (%d): %s", readerData.reader_gid.size(), red_log::bufToHexString(readerData.reader_gid.data(), readerData.reader_gid.size()).c_str());
-  LOG(I, "READER UNIQUE ID (%d): %s", readerData.reader_id.size(), red_log::bufToHexString(readerData.reader_id.data(), readerData.reader_id.size()).c_str());
+    pn532spi = new PN532_SPI(SS, SCK, MISO, MOSI);
+    nfc = new PN532(*pn532spi);
+    nfc->begin();
 
-  LOG(I, "HOMEKEY ISSUERS: %d", readerData.issuers.size());
+    LOG(I, "READER GROUP ID (%d): %s", readerData.reader_gid.size(), red_log::bufToHexString(readerData.reader_gid.data(), readerData.reader_gid.size()).c_str());
+    LOG(I, "READER UNIQUE ID (%d): %s", readerData.reader_id.size(), red_log::bufToHexString(readerData.reader_id.data(), readerData.reader_id.size()).c_str());
 
-  for (auto &&issuer : readerData.issuers)
-  {
-    LOG(D, "Issuer ID: %s, Public Key: %s", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str(), red_log::bufToHexString(issuer.issuer_pk.data(), issuer.issuer_pk.size()).c_str());
+    LOG(I, "HOMEKEY ISSUERS: %d", readerData.issuers.size());
+
+    for (auto &&issuer : readerData.issuers)
+    {
+      LOG(D, "Issuer ID: %s, Public Key: %s", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str(), red_log::bufToHexString(issuer.issuer_pk.data(), issuer.issuer_pk.size()).c_str());
+    }
+
+    xTaskCreate(serial_thread_entry, "serial_task", 8192, nullptr, 1, &serial_poll_task);
+    xTaskCreate(nfc_thread_entry, "nfc_task", 8192, nullptr, 1, &nfc_poll_task);
+  } else {
+    LOG(E, "Key json not found.");
   }
 
-  xTaskCreate(serial_thread_entry, "serial_task", 8192, nullptr, 1, &serial_poll_task);
-  xTaskCreate(nfc_thread_entry, "nfc_task", 8192, nullptr, 1, &nfc_poll_task);
+  //Begin HomeSpan Config
+  const esp_app_desc_t *app_desc = esp_app_get_description();
+  const std::string app_version = app_desc->version;
+
+  homeSpan.setStatusAutoOff(15);
+  homeSpan.setLogLevel(0);
+  homeSpan.setSketchVersion(app_version.c_str());
+
+  homeSpan.enableAutoStartAP();
+  // homeSpan.enableOTA(/* ota password */);
+  homeSpan.setPortNum(1201);
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_BT);
+  char macStr[9] = {0};
+  sprintf(macStr, "%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3]);
+  homeSpan.setHostNameSuffix(macStr);
+  homeSpan.begin(Category::Locks, "HomeKeyEsp32", "HK-", "HomeKey-ESP32");
+
+  new SpanAccessory();
+  new NFCAccessoryInformation();
+  new Service::HAPProtocolInformation();
+  new Characteristic::Version();
+  new LockManagement();
+  new LockMechanism();
+  new NFCAccess();
+
+  homeSpan.setControllerCallback(pairCallback);
 }
 
 void loop()
 {
+  homeSpan.poll();
   vTaskDelay(5 / portTICK_PERIOD_MS);
 }
