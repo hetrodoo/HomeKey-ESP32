@@ -368,7 +368,7 @@ void setup()
   read_json_file("/spiffs/key.json").get_to<readerData_t>(readerData);
   LOG(I, "Reader Data loaded from spiffs.");
 
-  pn532spi = new PN532_SPI(GPIO_NUM_7, GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6);
+  pn532spi = new PN532_SPI(SS, SCK, MISO, MOSI);
   nfc = new PN532(*pn532spi);
   nfc->begin();
 
