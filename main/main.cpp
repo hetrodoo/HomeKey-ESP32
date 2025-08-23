@@ -67,8 +67,8 @@ struct NFCAccessoryInformation final : Service::AccessoryInformation
 
     opt.push_back(&_CUSTOM_HardwareFinish);
     new Characteristic::Identify();
-    new Characteristic::Manufacturer("rednblkx");
-    new Characteristic::Model("HomeKey-ESP32");
+    new Characteristic::Manufacturer("hetrodo");
+    new Characteristic::Model("HTDLockZB");
     new Characteristic::Name(DEVICE_NAME);
     const esp_app_desc_t *app_desc = esp_app_get_description();
     std::string app_version = app_desc->version;
@@ -76,7 +76,7 @@ struct NFCAccessoryInformation final : Service::AccessoryInformation
     esp_read_mac(mac, ESP_MAC_BT);
     char macStr[9] = {0};
     sprintf(macStr, "%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3]);
-    std::string serialNumber = "HK-";
+    std::string serialNumber = "HTD-";
     serialNumber.append(macStr);
     new Characteristic::SerialNumber(serialNumber.c_str());
     new Characteristic::FirmwareRevision(app_version.c_str());
@@ -612,7 +612,7 @@ void setup()
   char macStr[9] = {0};
   sprintf(macStr, "%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3]);
   homeSpan.setHostNameSuffix(macStr);
-  homeSpan.begin(Category::Locks, "HomeKeyEsp32", "HK-", "HomeKey-ESP32");
+  homeSpan.begin(Category::Locks, "HTDLock", "HTD-", "HTDLockZB");
 
   new SpanAccessory();
   new NFCAccessoryInformation();
