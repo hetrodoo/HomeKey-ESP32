@@ -187,32 +187,22 @@ std::string hex_representation(const std::vector<uint8_t> &v)
   return hex_tmp;
 }
 
+void try_unlock() {
+  const auto TAG = "try_unlock";
+
+  LOG(I, "Trying...");
+  digitalWrite(sigPin, LOW);
+  vTaskDelay(250 / portTICK_PERIOD_MS);
+  digitalWrite(sigPin, HIGH);
+}
+
 void handle_door_cmd(const esp_zb_zcl_door_lock_cmd_id_t value) {
   const auto TAG = "handle_door_cmd";
   LOG(I, "Received door command: %d", value);
 
   if (value == ESP_ZB_ZCL_CMD_DOOR_LOCK_UNLOCK_DOOR) {
-    digitalWrite(sigPin, LOW);
-    vTaskDelay(250 / portTICK_PERIOD_MS);
-    digitalWrite(sigPin, HIGH);
+    try_unlock();
   }
-}
-
-void gnd_pulse_pin(const uint8_t pin, const TickType_t period = 250, const uint8_t times = 3) {
-  for (uint8_t i = 0; i < times; i++) {
-    digitalWrite(pin, LOW);
-    vTaskDelay(period / portTICK_PERIOD_MS);
-    digitalWrite(pin, HIGH);
-    vTaskDelay(period / portTICK_PERIOD_MS);
-  }
-}
-
-void try_unlock() {
-  const auto TAG = "try_unlock";
-
-  LOG(I, "Trying...");
-  gnd_pulse_pin(GPIO_NUM_21, 500, 2);
-  gnd_pulse_pin(GPIO_NUM_20, 2500, 1);
 }
 
 bool auth_raw_uid(const std::string &uid) {
@@ -341,8 +331,6 @@ std::vector<uint8_t> get_hash_identifier(const uint8_t *key, size_t len)
 
 void pair_callback()
 {
-  LOG(I, "Pair callback!!!!!");
-
   if (HAPClient::nAdminControllers() == 0)
   {
     delete_json_key();
@@ -588,7 +576,7 @@ void nfc_retry_entry(void *arg)
       const int startTime = millis();
 
       while (digitalRead(BOOT_PIN) == LOW) {
-        delay(50);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
         if ((millis() - startTime) > 3000) {
 
           LOG(I, "Clearing Homekey Keys...");
@@ -623,7 +611,6 @@ void setup_homespan_task_entry(void *arg) {
   const auto TAG = "setup_homespan_task_entry";
   LOG(I, "Running...");
 
-  //Begin HomeSpan Config
   const esp_app_desc_t *app_desc = esp_app_get_description();
   const std::string app_version = app_desc->version;
 
@@ -697,6 +684,7 @@ void setup()
 
     xTaskCreate(nfc_thread_entry, "nfc_task", 8192, nullptr, 1, &nfc_poll_task);
 
+    //Setup zigbee
     zbDoorLock.setManufacturerAndModel("hetrodo", "HTDLockZB");
     zbContactSwitch.setManufacturerAndModel("hetrodo", "HTDLockZB");
 
