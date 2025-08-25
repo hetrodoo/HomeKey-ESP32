@@ -1,3 +1,6 @@
+#define ZIGBEE_DOOR_LOCK_ENDPOINT 10
+#define CONTACT_SWITCH_ENDPOINT_NUMBER 11
+
 #include <cstdint>
 #include <memory>
 #define JSON_NOEXCEPTION 1
@@ -20,10 +23,17 @@
 #include <mbedtls/sha256.h>
 #include <esp_mac.h>
 #include <esp_spiffs.h>
+#include "Zigbee.h"
 
 auto TAG = "MAIN";
-
 bool write_json_key();
+[[noreturn]] void restart_task_entry(void *arg);
+
+uint8_t sigPin = GPIO_NUM_14;
+uint8_t sensorPin = GPIO_NUM_11;
+
+auto zbDoorLock = ZigbeeDoorLock(ZIGBEE_DOOR_LOCK_ENDPOINT);
+auto zbContactSwitch = ZigbeeContactSwitch(CONTACT_SWITCH_ENDPOINT_NUMBER);
 
 nlohmann::json acl;
 nlohmann::json keys;
@@ -31,8 +41,9 @@ PN532_SPI *pn532spi;
 PN532 *nfc;
 TaskHandle_t nfc_reconnect_task = nullptr;
 TaskHandle_t nfc_poll_task = nullptr;
-TaskHandle_t serial_poll_task = nullptr;
+TaskHandle_t hardware_task = nullptr;
 TaskHandle_t restart_task = nullptr;
+TaskHandle_t setup_homespan_task = nullptr;
 
 readerData_t readerData;
 KeyFlow hkFlow = kFlowFAST;
@@ -176,6 +187,17 @@ std::string hex_representation(const std::vector<uint8_t> &v)
   return hex_tmp;
 }
 
+void handle_door_cmd(const esp_zb_zcl_door_lock_cmd_id_t value) {
+  const auto TAG = "handle_door_cmd";
+  LOG(I, "Received door command: %d", value);
+
+  if (value == ESP_ZB_ZCL_CMD_DOOR_LOCK_UNLOCK_DOOR) {
+    digitalWrite(sigPin, LOW);
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    digitalWrite(sigPin, HIGH);
+  }
+}
+
 void gnd_pulse_pin(const uint8_t pin, const TickType_t period = 250, const uint8_t times = 3) {
   for (uint8_t i = 0; i < times; i++) {
     digitalWrite(pin, LOW);
@@ -225,18 +247,6 @@ void setup_spiffs() {
   size_t total = 0, used = 0;
   esp_spiffs_info(nullptr, &total, &used);
   LOG(I, "Total: %d, Used: %d", total, used);
-}
-
-[[noreturn]] void restart_task_entry(void *arg) {
-  constexpr auto restart_in = 10;
-
-  for (int i = 0; i < restart_in; i++) {
-    LOG(I, "Restarting in %d...", restart_in - i);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
-
-  LOG(I, "Restarting");
-  esp_restart();
 }
 
 nlohmann::json read_json_file(const char *path) {
@@ -314,9 +324,84 @@ void delete_json_key()
   readerData.reader_sk.clear();
 }
 
-void nfc_retry(void *arg)
+std::vector<uint8_t> get_hash_identifier(const uint8_t *key, size_t len)
 {
-  const auto TAG = "nfc_retry";
+  auto TAG = "getHashIdentifier";
+  LOG(V, "Key: %s, Length: %d", red_log::bufToHexString(key, len).c_str(), len);
+  std::vector<unsigned char> hashable;
+  std::string string = "key-identifier";
+  hashable.insert(hashable.begin(), string.begin(), string.end());
+  hashable.insert(hashable.end(), key, key + len);
+  LOG(V, "Hashable: %s", red_log::bufToHexString(&hashable.front(), hashable.size()).c_str());
+  uint8_t hash[32];
+  mbedtls_sha256(&hashable.front(), hashable.size(), hash, 0);
+  LOG(V, "HashIdentifier: %s", red_log::bufToHexString(hash, 8).c_str());
+  return std::vector<uint8_t>{hash, hash + 8};
+}
+
+void pair_callback()
+{
+  LOG(I, "Pair callback!!!!!");
+
+  if (HAPClient::nAdminControllers() == 0)
+  {
+    delete_json_key();
+    return;
+  }
+
+  for (auto it = homeSpan.controllerListBegin(); it != homeSpan.controllerListEnd(); ++it)
+  {
+    std::vector<uint8_t> id = get_hash_identifier(it->getLTPK(), 32);
+    LOG(D, "Found allocated controller - Hash: %s", red_log::bufToHexString(id.data(), 8).c_str());
+    const hkIssuer_t *foundIssuer = nullptr;
+
+    for (auto &&issuer : readerData.issuers)
+    {
+      if (std::equal(issuer.issuer_id.begin(), issuer.issuer_id.end(), id.begin()))
+      {
+        LOG(D, "Issuer %s already added, skipping", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str());
+        foundIssuer = &issuer;
+        break;
+      }
+    }
+
+    if (foundIssuer == nullptr)
+    {
+      LOG(D, "Adding new issuer - ID: %s", red_log::bufToHexString(id.data(), 8).c_str());
+      hkIssuer_t newIssuer;
+      newIssuer.issuer_id = std::vector<uint8_t>{id.begin(), id.begin() + 8};
+      newIssuer.issuer_pk.insert(newIssuer.issuer_pk.begin(), it->getLTPK(), it->getLTPK() + 32);
+      readerData.issuers.emplace_back(newIssuer);
+    }
+  }
+
+  write_json_key();
+}
+
+void status_callback(const HS_STATUS status) {
+  static bool neededPairing = false;
+
+  switch (status) {
+    case HS_PAIRING_NEEDED:
+      neededPairing = true;
+      break;
+
+    case HS_PAIRED:
+      if (!neededPairing) {
+        LOG(E, "Already paired, factory resetting...");
+        homeSpan.processSerialCommand("F");
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+void nfc_retry_entry(void *arg)
+{
+  const auto TAG = "nfc_retry_entry";
+  LOG(I, "Running...");
 
   LOG(I, "Starting reconnecting PN532");
   while (true)
@@ -348,12 +433,13 @@ void nfc_retry(void *arg)
 
 [[noreturn]] void nfc_thread_entry(void *arg) {
   const auto TAG = "nfc_thread_entry";
+  LOG(I, "Running...");
 
   if (uint32_t version_data = nfc->getFirmwareVersion(); !version_data)
   {
     LOG(E, "Error establishing PN532 connection");
     nfc->stop();
-    xTaskCreate(nfc_retry, "nfc_reconnect_task", 8192, nullptr, 1, &nfc_reconnect_task);
+    xTaskCreate(nfc_retry_entry, "nfc_reconnect_task", 8192, nullptr, 1, &nfc_reconnect_task);
     vTaskSuspend(nullptr);
   }
   else
@@ -381,7 +467,7 @@ void nfc_retry(void *arg)
     {
       LOG(W, "writeRegister has failed, abandoning ship !!");
       nfc->stop();
-      xTaskCreate(nfc_retry, "nfc_reconnect_task", 8192, nullptr, 1, &nfc_reconnect_task);
+      xTaskCreate(nfc_retry_entry, "nfc_reconnect_task", 8192, nullptr, 1, &nfc_reconnect_task);
       vTaskSuspend(nullptr);
     }
 
@@ -483,34 +569,33 @@ void nfc_retry(void *arg)
   }
 }
 
-[[noreturn]] void serial_thread_entry(void *arg) {
-  while (true)
-  {
-    if (Serial.available())
-    {
-      const auto TAG = "serial_thread_entry";
+[[noreturn]] void hardware_task_entry(void *arg) {
+  const auto TAG = "hardware_task_entry";
+  LOG(I, "Running...");
 
-      std::string input = Serial.readStringUntil('\n').c_str();
-      LOG(I, "Received command: %s", input.c_str());
+  while (true) {
+    static bool contact = false;
 
-      if (input == "write")
-      {
-        write_json_key();
-        LOG(I, "Ok.");
-      }
+    if (digitalRead(sensorPin) == HIGH && !contact) {
+      zbContactSwitch.setOpen();
+      contact = true;
+    } else if (digitalRead(sensorPin) == LOW && contact) {
+      zbContactSwitch.setClosed();
+      contact = false;
+    }
 
-      if (input == "read")
-      {
-        nlohmann::json keys = read_json_file("/spiffs/key.json");
+    if (digitalRead(BOOT_PIN) == LOW) {
+      const int startTime = millis();
 
-        if (keys != nullptr) {
-          LOG(I, "Keys: %s", keys.dump().c_str());
-        }
+      while (digitalRead(BOOT_PIN) == LOW) {
+        delay(50);
+        if ((millis() - startTime) > 3000) {
 
-        nlohmann::json acl = read_json_file("/spiffs/acl.json");
+          LOG(I, "Clearing Homekey Keys...");
+          delete_json_key();
 
-        if (keys != nullptr) {
-          LOG(I, "ACL: %s", acl.dump().c_str());
+          LOG(I, "Resetting zigbee to factory...");
+          Zigbee.factoryReset();
         }
       }
     }
@@ -519,99 +604,24 @@ void nfc_retry(void *arg)
   }
 }
 
-std::vector<uint8_t> getHashIdentifier(const uint8_t *key, size_t len)
-{
-  auto TAG = "getHashIdentifier";
-  LOG(V, "Key: %s, Length: %d", red_log::bufToHexString(key, len).c_str(), len);
-  std::vector<unsigned char> hashable;
-  std::string string = "key-identifier";
-  hashable.insert(hashable.begin(), string.begin(), string.end());
-  hashable.insert(hashable.end(), key, key + len);
-  LOG(V, "Hashable: %s", red_log::bufToHexString(&hashable.front(), hashable.size()).c_str());
-  uint8_t hash[32];
-  mbedtls_sha256(&hashable.front(), hashable.size(), hash, 0);
-  LOG(V, "HashIdentifier: %s", red_log::bufToHexString(hash, 8).c_str());
-  return std::vector<uint8_t>{hash, hash + 8};
+[[noreturn]] void restart_task_entry(void *arg) {
+  const auto TAG = "restart_task_entry";
+  LOG(I, "Running...");
+
+  constexpr auto restart_in = 10;
+
+  for (int i = 0; i < restart_in; i++) {
+    LOG(I, "Restarting in %d...", restart_in - i);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+
+  LOG(I, "Restarting");
+  esp_restart();
 }
 
-void pairCallback()
-{
-  if (HAPClient::nAdminControllers() == 0)
-  {
-    delete_json_key();
-    return;
-  }
-
-  for (auto it = homeSpan.controllerListBegin(); it != homeSpan.controllerListEnd(); ++it)
-  {
-    std::vector<uint8_t> id = getHashIdentifier(it->getLTPK(), 32);
-    LOG(D, "Found allocated controller - Hash: %s", red_log::bufToHexString(id.data(), 8).c_str());
-    const hkIssuer_t *foundIssuer = nullptr;
-
-    for (auto &&issuer : readerData.issuers)
-    {
-      if (std::equal(issuer.issuer_id.begin(), issuer.issuer_id.end(), id.begin()))
-      {
-        LOG(D, "Issuer %s already added, skipping", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str());
-        foundIssuer = &issuer;
-        break;
-      }
-    }
-
-    if (foundIssuer == nullptr)
-    {
-      LOG(D, "Adding new issuer - ID: %s", red_log::bufToHexString(id.data(), 8).c_str());
-      hkIssuer_t newIssuer;
-      newIssuer.issuer_id = std::vector<uint8_t>{id.begin(), id.begin() + 8};
-      newIssuer.issuer_pk.insert(newIssuer.issuer_pk.begin(), it->getLTPK(), it->getLTPK() + 32);
-      readerData.issuers.emplace_back(newIssuer);
-    }
-  }
-
-  write_json_key();
-}
-
-void setup()
-{
-  const auto TAG = "SETUP";
-
-  // pinMode(GPIO_NUM_20, OUTPUT);
-  // digitalWrite(GPIO_NUM_20, HIGH);
-  //
-  // pinMode(GPIO_NUM_21, OUTPUT);
-  // digitalWrite(GPIO_NUM_21, HIGH);
-
-  Serial.begin(115200);
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-  setup_spiffs();
-
-  acl = read_json_file("/spiffs/acl.json");
-  keys = read_json_file("/spiffs/key.json");
-
-  if (keys != nullptr) {
-    keys.get_to<readerData_t>(readerData);
-    LOG(I, "Reader Data loaded from spiffs.");
-
-    pn532spi = new PN532_SPI(SS, SCK, MISO, MOSI);
-    nfc = new PN532(*pn532spi);
-    nfc->begin();
-
-    LOG(I, "READER GROUP ID (%d): %s", readerData.reader_gid.size(), red_log::bufToHexString(readerData.reader_gid.data(), readerData.reader_gid.size()).c_str());
-    LOG(I, "READER UNIQUE ID (%d): %s", readerData.reader_id.size(), red_log::bufToHexString(readerData.reader_id.data(), readerData.reader_id.size()).c_str());
-
-    LOG(I, "HOMEKEY ISSUERS: %d", readerData.issuers.size());
-
-    for (auto &&issuer : readerData.issuers)
-    {
-      LOG(D, "Issuer ID: %s, Public Key: %s", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str(), red_log::bufToHexString(issuer.issuer_pk.data(), issuer.issuer_pk.size()).c_str());
-    }
-
-    xTaskCreate(serial_thread_entry, "serial_task", 8192, nullptr, 1, &serial_poll_task);
-    xTaskCreate(nfc_thread_entry, "nfc_task", 8192, nullptr, 1, &nfc_poll_task);
-  } else {
-    LOG(E, "Key json not found.");
-  }
+void setup_homespan_task_entry(void *arg) {
+  const auto TAG = "setup_homespan_task_entry";
+  LOG(I, "Running...");
 
   //Begin HomeSpan Config
   const esp_app_desc_t *app_desc = esp_app_get_description();
@@ -639,11 +649,87 @@ void setup()
   new LockMechanism();
   new NFCAccess();
 
-  homeSpan.setControllerCallback(pairCallback);
+  homeSpan.setControllerCallback(pair_callback);
+  homeSpan.setStatusCallback(status_callback);
+
+  while (true) {
+    homeSpan.poll();
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+  }
 }
 
-void loop()
+void setup()
 {
-  homeSpan.poll();
-  vTaskDelay(5 / portTICK_PERIOD_MS);
+  const auto TAG = "SETUP";
+
+  pinMode(sigPin, OUTPUT);
+  digitalWrite(sigPin, HIGH);
+
+  pinMode(BOOT_PIN, INPUT_PULLUP);
+  pinMode(sensorPin, INPUT_PULLUP);
+
+  Serial.begin(115200);
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+  setup_spiffs();
+
+  //Homekey
+  acl = read_json_file("/spiffs/acl.json");
+  keys = read_json_file("/spiffs/key.json");
+
+  if (keys != nullptr) {
+    keys.get_to<readerData_t>(readerData);
+    LOG(I, "Reader Data loaded from spiffs.");
+
+    pn532spi = new PN532_SPI(SS, SCK, MISO, MOSI);
+    nfc = new PN532(*pn532spi);
+    nfc->begin();
+
+    LOG(I, "READER GROUP ID (%d): %s", readerData.reader_gid.size(), red_log::bufToHexString(readerData.reader_gid.data(), readerData.reader_gid.size()).c_str());
+    LOG(I, "READER UNIQUE ID (%d): %s", readerData.reader_id.size(), red_log::bufToHexString(readerData.reader_id.data(), readerData.reader_id.size()).c_str());
+
+    LOG(I, "HOMEKEY ISSUERS: %d", readerData.issuers.size());
+
+    for (auto &&issuer : readerData.issuers)
+    {
+      LOG(D, "Issuer ID: %s, Public Key: %s", red_log::bufToHexString(issuer.issuer_id.data(), issuer.issuer_id.size()).c_str(), red_log::bufToHexString(issuer.issuer_pk.data(), issuer.issuer_pk.size()).c_str());
+    }
+
+    xTaskCreate(nfc_thread_entry, "nfc_task", 8192, nullptr, 1, &nfc_poll_task);
+
+    zbDoorLock.setManufacturerAndModel("hetrodo", "HTDLockZB");
+    zbContactSwitch.setManufacturerAndModel("hetrodo", "HTDLockZB");
+
+    zbDoorLock.onDoorCmd(handle_door_cmd);
+
+    LOG(I, "Adding ZigbeeDoorLock endpoint to Zigbee Core");
+    Zigbee.addEndpoint(&zbDoorLock);
+
+    LOG(I, "Adding ZigbeeContactSwitch endpoint to Zigbee Core");
+    Zigbee.addEndpoint(&zbContactSwitch);
+
+    if (!Zigbee.begin()) {
+      LOG(E, "Zigbee failed to start!");
+      LOG(E, "Rebooting...");
+      ESP.restart();
+    }
+
+    LOG(I, "Connecting to network");
+    while (!Zigbee.connected()) {
+      LOG(I, "Waiting...");
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    zbDoorLock.setLockState(false);
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    zbDoorLock.setLockState(true);
+
+    xTaskCreate(hardware_task_entry, "hardware_task", 8192, nullptr, 1, &hardware_task);
+  } else {
+    LOG(E, "Key json not found, going HomeSpan route...");
+    xTaskCreate(setup_homespan_task_entry, "setup_homespan_task", 8192, nullptr, 1, &setup_homespan_task);
+  }
 }
+
+void loop() {}
