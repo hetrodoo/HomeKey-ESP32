@@ -26,11 +26,13 @@ auto TAG = "MAIN";
 bool write_json_key();
 
 nlohmann::json acl;
+nlohmann::json keys;
 PN532_SPI *pn532spi;
 PN532 *nfc;
 TaskHandle_t nfc_reconnect_task = nullptr;
 TaskHandle_t nfc_poll_task = nullptr;
 TaskHandle_t serial_poll_task = nullptr;
+TaskHandle_t restart_task = nullptr;
 
 readerData_t readerData;
 KeyFlow hkFlow = kFlowFAST;
@@ -225,6 +227,18 @@ void setup_spiffs() {
   LOG(I, "Total: %d, Used: %d", total, used);
 }
 
+[[noreturn]] void restart_task_entry(void *arg) {
+  constexpr auto restart_in = 10;
+
+  for (int i = 0; i < restart_in; i++) {
+    LOG(I, "Restarting in %d...", restart_in - i);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+
+  LOG(I, "Restarting");
+  esp_restart();
+}
+
 nlohmann::json read_json_file(const char *path) {
   const auto TAG = "read_json_file";
 
@@ -264,6 +278,10 @@ nlohmann::json read_json_file(const char *path) {
 
 bool write_json_key() {
   const auto TAG = "write_json_key";
+
+  if (keys == nullptr && restart_task == nullptr) {
+    xTaskCreate(restart_task_entry, "restart_task", 8192, nullptr, 1, &restart_task);
+  }
 
   if (FILE* f = fopen("/spiffs/key.json", "w"); f != nullptr) {
     const nlohmann::json keys = readerData;
@@ -564,13 +582,12 @@ void setup()
   // digitalWrite(GPIO_NUM_21, HIGH);
 
   Serial.begin(115200);
-  //while (!Serial) {}
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
   setup_spiffs();
 
   acl = read_json_file("/spiffs/acl.json");
-  nlohmann::json keys = read_json_file("/spiffs/key.json");
+  keys = read_json_file("/spiffs/key.json");
 
   if (keys != nullptr) {
     keys.get_to<readerData_t>(readerData);
