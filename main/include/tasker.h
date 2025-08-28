@@ -12,6 +12,7 @@ enum Task {
     SETUP_HOMESPAN_TASK,
     RESTART_TASK,
     TRY_UNLOCK_TASK,
+    UPDATE_LOCK_STATE_TASK,
 };
 
 inline TaskHandle_t nfc_retry_task = nullptr;
@@ -20,6 +21,7 @@ inline TaskHandle_t hardware_task = nullptr;
 inline TaskHandle_t setup_homespan_task = nullptr;
 inline TaskHandle_t restart_task = nullptr;
 inline TaskHandle_t try_unlock_task = nullptr;
+inline TaskHandle_t update_lock_state_task = nullptr;
 
 void nfc_retry_task_entry(void *arg);
 [[noreturn]] void nfc_poll_task_entry(void *arg);
@@ -27,6 +29,7 @@ void nfc_retry_task_entry(void *arg);
 [[noreturn]] void restart_task_entry(void *arg);
 [[noreturn]] void setup_homespan_task_entry(void *arg);
 void try_unlock_task_entry(void *arg);
+void update_lock_state_task_entry(void *arg);
 
 inline void run_task(const Task task) {
     switch (task) {
@@ -47,6 +50,9 @@ inline void run_task(const Task task) {
             break;
         case TRY_UNLOCK_TASK:
             xTaskCreate(try_unlock_task_entry, "try_unlock_task", 8192, nullptr, 1, &try_unlock_task);
+            break;
+        case UPDATE_LOCK_STATE_TASK:
+            xTaskCreate(update_lock_state_task_entry, "update_lock_state_task", 8192, nullptr, 1, &update_lock_state_task);
             break;
     }
 }

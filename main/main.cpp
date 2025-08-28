@@ -27,8 +27,13 @@
 #include "zigbee_device.h"
 #include "homespan_device.h"
 
-uint8_t sigPin = GPIO_NUM_14;
-uint8_t sensorPin = GPIO_NUM_11;
+uint8_t sigPin = GPIO_NUM_2;
+uint8_t doorSensorPin = GPIO_NUM_15;
+uint8_t lockSensorPin = GPIO_NUM_3;
+
+bool lastDoorState = false;
+bool lastLockState = false;
+bool isUnlockTaskRunning = false;
 
 PN532_SPI *pn532spi;
 PN532 *nfc;
@@ -233,14 +238,17 @@ void nfc_retry_task_entry(void *arg)
   LOG(I, "Running...");
 
   while (true) {
-    static bool contact = false;
+    if (const bool isDoorSensorHigh = digitalRead(doorSensorPin) == HIGH; isDoorSensorHigh != lastDoorState) {
+      lastDoorState = isDoorSensorHigh;
 
-    if (digitalRead(sensorPin) == HIGH && !contact) {
-      zbContactSwitch.setOpen();
-      contact = true;
-    } else if (digitalRead(sensorPin) == LOW && contact) {
-      zbContactSwitch.setClosed();
-      contact = false;
+      zbBinary.setBinaryInput(isDoorSensorHigh);
+      zbBinary.reportBinaryInput();
+    }
+
+    if (const bool isLockSensorHigh = digitalRead(lockSensorPin) == HIGH; isLockSensorHigh != lastLockState) {
+      lastLockState = isLockSensorHigh;
+
+      zbDoorLock.setLockState(isLockSensorHigh);
     }
 
     if (digitalRead(BOOT_PIN) == LOW) {
@@ -291,12 +299,45 @@ void nfc_retry_task_entry(void *arg)
 }
 
 void try_unlock_task_entry(void *arg) {
-  const auto TAG = "try_unlock";
+  const auto TAG = "try_unlock_task_entry";
+
+  if (isUnlockTaskRunning) {
+    LOG(W, "Task already running.");
+    vTaskDelete(nullptr);
+    return;
+  }
+  isUnlockTaskRunning = true;
+
+  bool isLocked = digitalRead(lockSensorPin) == HIGH;
+  const bool targetState = !isLocked;
+
+  LOG(I, "We are currently %s.", isLocked ? "Locked" : "Unlocked");
+  LOG(I, "Trying to %s...", targetState ? "Lock" : "Unlock");
+
+  while (targetState != isLocked) {
+    digitalWrite(sigPin, LOW);
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    digitalWrite(sigPin, HIGH);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+    isLocked = digitalRead(lockSensorPin) == HIGH;
+  }
+
+  LOG(I, "Successfully %s!", isLocked ? "Locked" : "Unlocked");
+
+  isUnlockTaskRunning = false;
+  vTaskDelete(nullptr);
+}
+
+void update_lock_state_task_entry(void *arg) {
+  const auto TAG = "update_lock_state_task_entry";
 
   LOG(I, "Trying...");
-  digitalWrite(sigPin, LOW);
-  vTaskDelay(250 / portTICK_PERIOD_MS);
-  digitalWrite(sigPin, HIGH);
+  const bool isLockSensorHigh = digitalRead(lockSensorPin) == HIGH;
+  lastLockState = !isLockSensorHigh;
+  zbDoorLock.setLockState(!isLockSensorHigh);
+
+  vTaskDelete(nullptr);
 }
 
 void setup()
@@ -307,7 +348,8 @@ void setup()
   digitalWrite(sigPin, HIGH);
 
   pinMode(BOOT_PIN, INPUT_PULLUP);
-  pinMode(sensorPin, INPUT_PULLUP);
+  pinMode(doorSensorPin, INPUT_PULLUP);
+  pinMode(lockSensorPin, INPUT_PULLUP);
 
   Serial.begin(115200);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
