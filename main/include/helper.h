@@ -1,3 +1,6 @@
+#ifndef HOMEKEY_ESP32_HELPER_H
+#define HOMEKEY_ESP32_HELPER_H
+
 enum HK_COLOR
 {
   TAN,
@@ -28,3 +31,5 @@ void with_crc16(unsigned char *data, unsigned int size, unsigned char *result)
 {
   crc16a(data, size, result);
 }
+
+#endif //HOMEKEY_ESP32_HELPER_H

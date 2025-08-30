@@ -257,9 +257,19 @@ void nfc_retry_task_entry(void *arg)
       while (digitalRead(BOOT_PIN) == LOW) {
         vTaskDelay(50 / portTICK_PERIOD_MS);
         if ((millis() - startTime) > 3000) {
+          const unsigned long startTimeFactory = millis();
 
-          LOG(I, "Clearing Homekey Keys...");
-          delete_json_key();
+          while (digitalRead(BOOT_PIN) == LOW) {
+            vTaskDelay(50 / portTICK_PERIOD_MS);
+            if ((millis() - startTimeFactory) > 7000) {
+
+              LOG(I, "Clearing Homekey Keys...");
+              delete_json_key();
+
+              LOG(I, "Resetting zigbee to factory...");
+              Zigbee.factoryReset();
+            }
+          }
 
           LOG(I, "Resetting zigbee to factory...");
           Zigbee.factoryReset();

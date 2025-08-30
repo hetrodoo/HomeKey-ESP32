@@ -55,8 +55,8 @@ struct NFCAccessoryInformation final : Service::AccessoryInformation
     serialNumber.append(macStr);
     new Characteristic::SerialNumber(serialNumber.c_str());
     new Characteristic::FirmwareRevision(app_version.c_str());
-    std::array<uint8_t, 6> decB64 = hk_color_vals[HK_COLOR::SILVER];
-    TLV8 hwfinish(NULL, 0);
+    std::array<uint8_t, 6> decB64 = hk_color_vals[HK_COLOR::BLACK];
+    TLV8 hwfinish(nullptr, 0);
     hwfinish.unpack(decB64.data(), decB64.size());
     new Characteristic::HardwareFinish(hwfinish);
 
